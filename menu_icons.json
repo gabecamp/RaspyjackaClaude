@@ -486,5 +486,8 @@
   "pwnagotchi_detect": "👾",
   "bt_lookout": "👁",
   "audio_rta": "🎵",
-  "gps_ntp": "🕐"
+  "gps_ntp": "🕐",
+  "ble_honeypot": "🦆",
+  "ble_honeypair": "🍯",
+  "chameleon_ble": "🦎"
 }
