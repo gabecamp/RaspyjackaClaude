@@ -489,5 +489,6 @@
   "gps_ntp": "🕐",
   "ble_honeypot": "🦆",
   "ble_honeypair": "🍯",
-  "chameleon_ble": "🦎"
+  "chameleon_ble": "🦎",
+  "gatt_walker": "🔍"
 }
