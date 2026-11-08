@@ -481,5 +481,7 @@
   " doodle_jump": "",
   " cyber_swarm": "",
   " cc1101_spectrum": "",
-  "biscuit_bridge": "🍪"
+  "biscuit_bridge": "🍪",
+  "tracker_detect": "📍",
+  "pwnagotchi_detect": "👾"
 }
