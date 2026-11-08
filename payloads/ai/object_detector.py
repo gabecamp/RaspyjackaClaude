@@ -31,6 +31,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 from payloads._display_helper import ScaledDraw, scaled_font
 from payloads._input_helper import get_button
+from payloads._camera_helper import (
+    start_stream, take_snapshot, start_recording, record_clip,
+    stop_recording, find_uvc_device,
+)
 
 PINS = {
     "UP": 6, "DOWN": 19, "LEFT": 5, "RIGHT": 26,
@@ -167,11 +171,7 @@ def _detect_thread():
     out_details = interp.get_output_details()
     labels = _load_labels()
 
-    proc = subprocess.Popen(
-        ["rpicam-vid", "--width", str(W), "--height", str(H),
-         "--framerate", "8", "--codec", "yuv420",
-         "--rotation", "180", "-t", "0", "--nopreview", "-o", "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    proc = start_stream(W, H, fps=8)
 
     frame_size = W * H * 3 // 2
     fb_fd = None
@@ -373,10 +373,7 @@ def main():
             from datetime import datetime
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(LOOT_DIR, f"detect_{ts}.jpg")
-            subprocess.run(
-                ["rpicam-still", "-o", path, "--width", "1920", "--height", "1080",
-                 "-t", "300", "--nopreview", "--rotation", "180"],
-                capture_output=True, timeout=10)
+            take_snapshot(path, 1920, 1080)
 
         if not _detecting:
             _draw_status()
