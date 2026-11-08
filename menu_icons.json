@@ -501,5 +501,15 @@
   "hid_covert_channel": "📡",
   "wifi_covert_channel": "🕵",
   "wigle_wardrive": "🗺",
-  "ble_density_counter": "👥"
+  "ble_density_counter": "👥",
+  "sdr_gsm": "📶",
+  "sdr_ais": "🚢",
+  "sdr_acars": "✈",
+  "sdr_noaa": "🛰",
+  "sdr_p25": "📻",
+  "sdr_dab": "🎶",
+  "sdr_ism_logger": "📡",
+  "sdr_tpms": "🛞",
+  "sdr_rf_fingerprint": "🔬",
+  "sdr_ble_sniff": "📶"
 }
