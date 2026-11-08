@@ -492,5 +492,14 @@
   "chameleon_ble": "🦎",
   "gatt_walker": "🔍",
   "drone_detect": "🛩",
-  "ble_predator": "🐺"
+  "ble_predator": "🐺",
+  "vuln_scanner": "🛡",
+  "sql_stealer": "🗃",
+  "wifi_channel_monitor": "📊",
+  "pcap_capture": "📦",
+  "usb_gadget_switcher": "🔌",
+  "hid_covert_channel": "📡",
+  "wifi_covert_channel": "🕵",
+  "wigle_wardrive": "🗺",
+  "ble_density_counter": "👥"
 }

@@ -224,24 +224,41 @@ _show_clock = True
 def _check_battery():
     global _battery_pct, _battery_charging
     try:
-        import glob
-        ps = glob.glob("/sys/class/power_supply/bq27*/")
-        if not ps:
+        import glob as _glob
+        base = None
+        for candidate in _glob.glob("/sys/class/power_supply/*/"):
+            tp = candidate + "type"
+            try:
+                with open(tp) as f:
+                    if f.read().strip() == "Battery":
+                        base = candidate
+                        break
+            except Exception:
+                continue
+        if base is None:
+            for pattern in ("bq27*", "battery", "BAT*", "pisugar*", "max17*"):
+                found = _glob.glob("/sys/class/power_supply/" + pattern + "/")
+                if found:
+                    base = found[0]
+                    break
+        if base is None:
             _battery_pct = -1
             return
-        base = ps[0]
         cap_path = base + "capacity"
         if os.path.exists(cap_path):
             with open(cap_path) as f:
                 _battery_pct = max(0, min(100, int(f.read().strip())))
-        else:
+        elif os.path.exists(base + "voltage_now"):
             with open(base + "voltage_now") as f:
                 uv = int(f.read().strip())
             _battery_pct = max(0, min(100, int((uv / 1_000_000 - 3.0) / 1.2 * 100)))
+        else:
+            _battery_pct = -1
+            return
         status_path = base + "status"
         if os.path.exists(status_path):
             with open(status_path) as f:
-                _battery_charging = f.read().strip() == "Charging"
+                _battery_charging = f.read().strip() in ("Charging", "Full")
     except Exception:
         _battery_pct = -1
 
