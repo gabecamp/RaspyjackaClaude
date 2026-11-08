@@ -483,5 +483,8 @@
   " cc1101_spectrum": "",
   "biscuit_bridge": "🍪",
   "tracker_detect": "📍",
-  "pwnagotchi_detect": "👾"
+  "pwnagotchi_detect": "👾",
+  "bt_lookout": "👁",
+  "audio_rta": "🎵",
+  "gps_ntp": "🕐"
 }
