@@ -39,6 +39,10 @@ import LCD_Config
 from PIL import Image, ImageDraw
 from payloads._display_helper import ScaledDraw, scaled_font
 from payloads._input_helper import get_button
+from payloads._camera_helper import (
+    start_stream, take_snapshot, start_recording, record_clip,
+    stop_recording, find_uvc_device,
+)
 
 PINS = {
     "UP": 6, "DOWN": 19, "LEFT": 5, "RIGHT": 26,
@@ -88,6 +92,7 @@ RESOLUTIONS = [
 
 _running = True
 _recording = False
+_rec_proc = None
 _previewing = False
 _preview_proc = None
 _last_frame = None
@@ -121,6 +126,8 @@ def _get_btn():
 
 
 def _check_camera():
+    if find_uvc_device():
+        return True
     try:
         r = subprocess.run(
             ["rpicam-hello", "--list-cameras"],
@@ -155,12 +162,7 @@ def _start_preview():
     if _previewing:
         return
     _previewing = True
-    _preview_proc = subprocess.Popen(
-        ["rpicam-vid", "--width", str(W), "--height", str(H),
-         "--framerate", "15", "--codec", "yuv420",
-         "--rotation", "180",
-         "-t", "0", "--nopreview", "-o", "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    _preview_proc = start_stream(W, H, fps=15)
     threading.Thread(target=_preview_thread, daemon=True).start()
 
 
@@ -254,16 +256,13 @@ def _snap_photo():
 
 
 def _snap_hires(res_idx):
-    """Hi-res capture via rpicam-still (pauses preview)."""
+    """Hi-res capture (USB UVC or rpicam-still); pauses preview."""
     os.makedirs(PHOTO_DIR, exist_ok=True)
     _, w, h = RESOLUTIONS[res_idx]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(PHOTO_DIR, f"hires_{ts}.jpg")
     _stop_preview()
-    subprocess.run(
-        ["rpicam-still", "-o", path, "--width", str(w), "--height", str(h),
-         "-t", "500", "--nopreview", "-q", "90", "--rotation", "180"],
-        capture_output=True, timeout=10)
+    take_snapshot(path, w, h)
     _start_preview()
     if os.path.isfile(path):
         return path, os.path.getsize(path) // 1024
@@ -271,23 +270,20 @@ def _snap_hires(res_idx):
 
 
 def _start_recording(res_idx):
-    global _recording
+    global _recording, _rec_proc
     os.makedirs(VIDEO_DIR, exist_ok=True)
     _, w, h = RESOLUTIONS[min(res_idx, 2)]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(VIDEO_DIR, f"video_{ts}.h264")
     _recording = True
-    subprocess.Popen(
-        ["rpicam-vid", "-o", path, "--width", str(w), "--height", str(h),
-         "--framerate", "30", "-t", "0", "--nopreview", "--rotation", "180",
-         "--codec", "h264"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _rec_proc = start_recording(path, w, h, fps=30)
     return path
 
 
 def _stop_recording():
-    global _recording
-    subprocess.run(["pkill", "-INT", "rpicam-vid"], capture_output=True)
+    global _recording, _rec_proc
+    stop_recording(_rec_proc)
+    _rec_proc = None
     time.sleep(0.5)
     _recording = False
 
@@ -672,10 +668,7 @@ def main():
                 tl_last_capture = now
                 _, w, h = RESOLUTIONS[min(res_idx, 2)]
                 path = os.path.join(tl_session_dir, f"frame_{tl_frame_count:05d}.jpg")
-                subprocess.run(
-                    ["rpicam-still", "-o", path, "--width", str(w), "--height", str(h),
-                     "-t", "300", "--nopreview", "-q", "85", "--rotation", "180"],
-                    capture_output=True, timeout=10)
+                take_snapshot(path, w, h)
                 if os.path.isfile(path):
                     tl_frame_count += 1
 

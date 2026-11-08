@@ -34,6 +34,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 from payloads._display_helper import ScaledDraw, scaled_font
 from payloads._input_helper import get_button
+from payloads._camera_helper import (
+    start_stream, take_snapshot, start_recording, record_clip,
+    stop_recording, find_uvc_device,
+)
 
 PINS = {
     "UP": 6, "DOWN": 19, "LEFT": 5, "RIGHT": 26,
@@ -124,11 +128,7 @@ def _scan_thread():
     global _scanning
     from pyzbar.pyzbar import decode
 
-    proc = subprocess.Popen(
-        ["rpicam-vid", "--width", str(W), "--height", str(H),
-         "--framerate", "10", "--codec", "yuv420",
-         "--rotation", "180", "-t", "0", "--nopreview", "-o", "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    proc = start_stream(W, H, fps=10)
 
     frame_size = W * H * 3 // 2
     fb_fd = None

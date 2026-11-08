@@ -32,6 +32,7 @@ from PIL import Image, ImageDraw
 from payloads._display_helper import ScaledDraw, scaled_font
 from payloads._input_helper import get_button
 from payloads._audio_helper import get_audio_card, get_alsa_dev, set_playback_volume
+from payloads._camera_helper import find_uvc_device, take_snapshot
 
 PINS = {
     "UP": 6, "DOWN": 19, "LEFT": 5, "RIGHT": 26,
@@ -266,8 +267,15 @@ def test_microphone():
 
 
 def test_camera():
-    """Test IMX219 camera."""
+    """Test USB UVC camera if attached, otherwise the IMX219 CSI camera."""
     try:
+        if find_uvc_device():
+            tmp = "/tmp/hwtest_uvc.jpg"
+            if take_snapshot(tmp, 640, 480, timeout=15):
+                sz = os.path.getsize(tmp)
+                os.remove(tmp)
+                return "PASS", f"UVC {sz//1024}KB"
+            return "WARN", "UVC: no capture"
         r = subprocess.run(["rpicam-hello", "--list-cameras"], capture_output=True, text=True, timeout=5)
         if "imx219" in r.stdout.lower():
             r2 = subprocess.run(
