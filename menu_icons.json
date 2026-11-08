@@ -490,5 +490,7 @@
   "ble_honeypot": "🦆",
   "ble_honeypair": "🍯",
   "chameleon_ble": "🦎",
-  "gatt_walker": "🔍"
+  "gatt_walker": "🔍",
+  "drone_detect": "🛩",
+  "ble_predator": "🐺"
 }
