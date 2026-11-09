@@ -457,7 +457,8 @@
     " sdr_aprs": "",
     " sdr_meteor": "",
     " gnss_skyplot": "",
-    " kismet_scanner": ""
+    " kismet_scanner": "",
+    " auto_update_claude": ""
   },
   "fallbacks": {
     "__scan__": "",
