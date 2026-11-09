@@ -1,6 +1,6 @@
 """
 Shared NFC driver for RaspyJack NFC suite.
-Supports PN532 (UART/I2C), nfcpy USB readers, Proxmark3, and Chameleon Ultra.
+Supports PN532 (UART/I2C), nfcpy USB readers, Proxmark3, Chameleon Ultra (USB & BLE).
 """
 
 import os
@@ -36,6 +36,15 @@ try:
 except ImportError:
     nfcpy = None
     NFCPY_OK = False
+
+try:
+    import asyncio as _asyncio
+    from bleak import BleakClient as _BleakClient, BleakScanner as _BleakScanner
+    BLEAK_OK = True
+except ImportError:
+    _BleakClient = None
+    _BleakScanner = None
+    BLEAK_OK = False
 
 # PN532 protocol constants
 PREAMBLE = 0x00
@@ -1086,6 +1095,335 @@ CU_TAG_TYPES = {
 }
 
 
+class ChameleonUltraBLEDriver:
+    """Chameleon Ultra driver via BLE Nordic UART Service (NUS)."""
+    can_write = True
+    can_emulate = True
+
+    _NUS_TX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+    _NUS_RX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+
+    def __init__(self, address: str):
+        self._address = address
+        self._client = None
+        self._loop = None
+        self._thread = None
+        self._resp_buf = bytearray()
+        self._resp_event = None
+        self._lock = threading.Lock()
+        self._last_auth_key = None
+        self._last_auth_key_type = MIFARE_AUTH_A
+        self._connected = False
+        self._start_loop()
+        self._run(self._connect())
+
+    def _start_loop(self):
+        self._loop = _asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
+    def _run(self, coro, timeout=10.0):
+        if not self._loop or not self._loop.is_running():
+            return None
+        fut = _asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return fut.result(timeout=timeout)
+        except Exception:
+            return None
+
+    async def _connect(self):
+        self._client = _BleakClient(self._address)
+        await self._client.connect(timeout=8.0)
+        self._resp_event = _asyncio.Event()
+        await self._client.start_notify(self._NUS_RX, self._on_notify)
+        self._connected = True
+
+    def _on_notify(self, sender, data):
+        self._resp_buf.extend(data)
+        if self._resp_event:
+            self._loop.call_soon_threadsafe(self._resp_event.set)
+
+    async def _send_cmd_async(self, cmd: int, data: bytes = b"", timeout: float = 3.0):
+        if not self._client or not self._client.is_connected:
+            return None
+        frame = self._build_frame(cmd, data)
+        self._resp_buf.clear()
+        self._resp_event.clear()
+        # BLE MTU may require chunking; bleak handles this for write_gatt_char
+        await self._client.write_gatt_char(self._NUS_TX, frame, response=False)
+        # Wait for response, reassembling fragments
+        deadline = _asyncio.get_event_loop().time() + timeout
+        while True:
+            remaining = deadline - _asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            self._resp_event.clear()
+            try:
+                await _asyncio.wait_for(self._resp_event.wait(), min(remaining, 0.5))
+            except _asyncio.TimeoutError:
+                pass
+            parsed = self._parse_frame(bytes(self._resp_buf))
+            if parsed is not None:
+                return parsed[1], parsed[2]
+        return None
+
+    def _send_cmd(self, cmd: int, data: bytes = b"", timeout: float = 3.0):
+        with self._lock:
+            return self._run(self._send_cmd_async(cmd, data, timeout), timeout=timeout + 2)
+
+    @staticmethod
+    def _lrc(data: bytes) -> int:
+        return (0x100 - (sum(data) & 0xFF)) & 0xFF
+
+    def _build_frame(self, cmd: int, data: bytes = b"", status: int = 0) -> bytes:
+        header = struct.pack(">HHH", cmd, status, len(data))
+        sof = bytes([_CU_SOF])
+        lrc1 = bytes([self._lrc(sof)])
+        lrc2 = bytes([self._lrc(sof + lrc1 + header)])
+        lrc3 = bytes([self._lrc(sof + lrc1 + header + lrc2 + data)])
+        return sof + lrc1 + header + lrc2 + data + lrc3
+
+    def _parse_frame(self, raw: bytes):
+        if len(raw) < 9 or raw[0] != _CU_SOF:
+            return None
+        if raw[1] != self._lrc(raw[0:1]):
+            return None
+        cmd, status, dlen = struct.unpack(">HHH", raw[2:8])
+        if raw[8] != self._lrc(raw[0:8]):
+            return None
+        if len(raw) < 9 + dlen + 1:
+            return None
+        data = raw[9:9 + dlen]
+        if raw[9 + dlen] != self._lrc(raw[0:9 + dlen]):
+            return None
+        return cmd, status, data
+
+    def close(self):
+        if self._client:
+            self._run(self._client.disconnect(), timeout=5.0)
+            self._client = None
+        self._connected = False
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+    def get_device_model(self) -> str:
+        result = self._send_cmd(1033)
+        if result and result[0] in _CU_SUCCESS_CODES:
+            model_id = result[1][0] if result[1] else 0xFF
+            return {0: "Ultra", 1: "Lite"}.get(model_id, "Unknown")
+        return "Ultra"
+
+    def get_firmware(self) -> Optional[Tuple[int, int, int, int]]:
+        result = self._send_cmd(_CU_GET_APP_VERSION)
+        if result is None:
+            return None
+        status, data = result
+        if status in _CU_SUCCESS_CODES and len(data) >= 2:
+            return (data[0], data[1], 0, 0)
+        return None
+
+    def sam_config(self):
+        self._send_cmd(_CU_CHANGE_DEVICE_MODE, bytes([0x01]))
+
+    def read_passive_target(self, card_type=0x00, timeout=2.0) -> Optional[CardInfo]:
+        self._send_cmd(_CU_CHANGE_DEVICE_MODE, bytes([0x01]))
+        time.sleep(0.3)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            result = self._send_cmd(_CU_HF14A_SCAN, timeout=2.0)
+            if result is not None:
+                status, data = result
+                if status in _CU_SUCCESS_CODES and len(data) >= 4:
+                    uid_len = data[0]
+                    if len(data) >= 1 + uid_len + 3:
+                        uid = data[1:1 + uid_len]
+                        atqa_off = 1 + uid_len
+                        sak_off = atqa_off + 2
+                        atqa = data[atqa_off] | (data[atqa_off + 1] << 8)
+                        sak = data[sak_off]
+                        return CardInfo(uid=bytes(uid), atqa=atqa, sak=sak)
+            time.sleep(0.2)
+        return None
+
+    def mifare_auth(self, block: int, key: bytes, uid: bytes, key_type: int = MIFARE_AUTH_A) -> bool:
+        kt = 0x60 if key_type == MIFARE_AUTH_A else 0x61
+        data = bytes([kt, block]) + key[:6]
+        result = self._send_cmd(_CU_MF1_AUTH_ONE_KEY_BLOCK, data)
+        if result is None:
+            return False
+        ok = result[0] in _CU_SUCCESS_CODES
+        if ok:
+            self._last_auth_key = key[:6]
+            self._last_auth_key_type = key_type
+        return ok
+
+    def mifare_read(self, block: int) -> Optional[bytes]:
+        key = self._last_auth_key or bytes.fromhex("FFFFFFFFFFFF")
+        kt = 0x60 if self._last_auth_key_type == MIFARE_AUTH_A else 0x61
+        data = bytes([kt, block]) + key[:6]
+        result = self._send_cmd(_CU_MF1_READ_ONE_BLOCK, data)
+        if result is None:
+            return None
+        status, resp = result
+        if status in _CU_SUCCESS_CODES and len(resp) >= 16:
+            return bytes(resp[:16])
+        return None
+
+    def mifare_write(self, block: int, data: bytes) -> bool:
+        key = self._last_auth_key or bytes.fromhex("FFFFFFFFFFFF")
+        kt = 0x60 if self._last_auth_key_type == MIFARE_AUTH_A else 0x61
+        payload = bytes([kt, block]) + key[:6] + data[:16]
+        result = self._send_cmd(_CU_MF1_WRITE_ONE_BLOCK, payload)
+        if result is None:
+            return False
+        return result[0] in _CU_SUCCESS_CODES
+
+    def mifare_ul_read(self, page: int) -> Optional[bytes]:
+        pages_data = b""
+        for p in range(page, min(page + 4, 256)):
+            apdu = bytes([MIFARE_READ, p])
+            result = self._send_cmd(_CU_HF14A_RAW, apdu, timeout=2.0)
+            if result is None:
+                return None
+            status, resp = result
+            if status != 0 or len(resp) < 4:
+                return None
+            pages_data += resp[:4]
+        return pages_data if len(pages_data) == 16 else None
+
+    def mifare_ul_write(self, page: int, data: bytes) -> bool:
+        apdu = bytes([MIFARE_UL_WRITE, page]) + data[:4]
+        result = self._send_cmd(_CU_HF14A_RAW, apdu, timeout=2.0)
+        if result is None:
+            return False
+        return result[0] in _CU_SUCCESS_CODES
+
+    def data_exchange(self, data: bytes, timeout=1.0) -> Optional[bytes]:
+        scan_result = self._send_cmd(2016, timeout=3.0)
+        if scan_result is None or scan_result[0] not in _CU_SUCCESS_CODES:
+            return None
+        options = 0b01101100
+        timeout_ms = int(max(timeout, 1.0) * 1000)
+        bitlen = len(data) * 8
+        raw_data = struct.pack(">BHH", options, timeout_ms, bitlen) + data
+        result = self._send_cmd(_CU_HF14A_RAW, raw_data, timeout=max(3.0, timeout + 1))
+        if result is None:
+            return None
+        status, resp = result
+        if resp and len(resp) >= 2:
+            return bytes(resp)
+        return None
+
+    def communicate_thru(self, data: bytes, timeout=1.0) -> Optional[bytes]:
+        return self.data_exchange(data, timeout=timeout)
+
+    def in_communicate_thru_raw(self, data: bytes, timeout=0.5) -> Optional[bytes]:
+        return self.data_exchange(data, timeout=timeout)
+
+    def init_as_target(self, uid: bytes, atqa: bytes = b"\x04\x00", sak: int = 0x08, timeout: float = 1.0) -> Optional[bytes]:
+        self._send_cmd(_CU_CHANGE_DEVICE_MODE, bytes([0x00]))
+        return uid[:4]
+
+    def tg_get_data(self) -> Optional[bytes]:
+        return None
+
+    def tg_set_data(self, data: bytes) -> bool:
+        return False
+
+    def command(self, cmd_id: int, data: bytes = b"", timeout: float = 3.0) -> Optional[Tuple[int, bytes]]:
+        return self._send_cmd(cmd_id, data, timeout=timeout)
+
+    def get_git_version(self) -> str:
+        result = self._send_cmd(1017)
+        if result and result[0] in _CU_SUCCESS_CODES and result[1]:
+            return result[1].decode("utf-8", errors="replace").strip("\x00")
+        return ""
+
+    def get_battery(self) -> Optional[Tuple[int, int]]:
+        result = self._send_cmd(1025)
+        if result and result[0] in _CU_SUCCESS_CODES and len(result[1]) >= 3:
+            voltage = (result[1][0] << 8) | result[1][1]
+            pct = result[1][2]
+            return voltage, pct
+        return None
+
+    def get_active_slot(self) -> int:
+        result = self._send_cmd(1018)
+        if result and result[0] in _CU_SUCCESS_CODES and result[1]:
+            return result[1][0]
+        return 0
+
+    def set_active_slot(self, slot: int):
+        self._send_cmd(1003, bytes([slot & 0x07]))
+
+    def get_slot_info(self) -> list:
+        result = self._send_cmd(1019)
+        slots = []
+        hf_types = {0: "None", 1: "MF1K", 2: "MF2K", 3: "MF4K", 4: "NTAG213",
+                     5: "NTAG215", 6: "NTAG216", 7: "MF0ICU1", 8: "MF0ICU2",
+                     9: "MF0UL11", 10: "MF0UL21", 11: "EM4100", 12: "HID"}
+        lf_types = {0: "None", 1: "EM4100", 2: "HID"}
+        if result and result[0] in _CU_SUCCESS_CODES and len(result[1]) >= 16:
+            for i in range(8):
+                hf = result[1][i * 2] if i * 2 < len(result[1]) else 0
+                lf = result[1][i * 2 + 1] if i * 2 + 1 < len(result[1]) else 0
+                slots.append({
+                    "slot": i,
+                    "hf_type": hf_types.get(hf, f"Type{hf}"),
+                    "lf_type": lf_types.get(lf, f"Type{lf}"),
+                })
+        else:
+            for i in range(8):
+                slots.append({"slot": i, "hf_type": "Unknown", "lf_type": "Unknown"})
+        return slots
+
+    def get_enabled_slots(self) -> list:
+        result = self._send_cmd(1023)
+        if result and result[0] in _CU_SUCCESS_CODES and result[1]:
+            enabled = []
+            for i in range(8):
+                if i < len(result[1]):
+                    enabled.append(bool(result[1][i]))
+                else:
+                    enabled.append(True)
+            return enabled
+        return [True] * 8
+
+    def set_slot_enable(self, slot: int, enable: bool):
+        self._send_cmd(1006, bytes([slot & 0x07, 0x01 if enable else 0x00]))
+
+    def em410x_scan(self) -> Optional[bytes]:
+        self._send_cmd(_CU_CHANGE_DEVICE_MODE, bytes([0x01]))
+        result = self._send_cmd(3000, timeout=5.0)
+        if result and result[0] in _CU_SUCCESS_CODES and len(result[1]) >= 5:
+            return bytes(result[1][:5])
+        return None
+
+    def hid_scan(self) -> Optional[bytes]:
+        self._send_cmd(_CU_CHANGE_DEVICE_MODE, bytes([0x01]))
+        result = self._send_cmd(3002, timeout=5.0)
+        if result and result[0] in _CU_SUCCESS_CODES and result[1]:
+            return bytes(result[1])
+        return None
+
+    @staticmethod
+    def detect_chameleon_ble() -> Optional[Tuple[str, str]]:
+        """Scan BLE for Chameleon devices. Returns (address, description) or None."""
+        if not BLEAK_OK:
+            return None
+        try:
+            loop = _asyncio.new_event_loop()
+            devs = loop.run_until_complete(_BleakScanner.discover(timeout=4, return_adv=False))
+            loop.close()
+            for d in devs:
+                name = d.name or ""
+                if "chameleon" in name.lower():
+                    return d.address, f"Chameleon BLE {name} ({d.address})"
+        except Exception:
+            pass
+        return None
+
+
 def _usb_reset_ch340():
     """Reset CH340 USB device to recover stuck PN532."""
     import glob
@@ -1127,6 +1465,19 @@ def auto_detect() -> Tuple[Optional[_PN532Base], str]:
             port, desc = cu_result
             drv = ChameleonUltraDriver(port)
             return drv, desc
+
+    # Chameleon Ultra via BLE
+    if BLEAK_OK:
+        try:
+            ble_result = ChameleonUltraBLEDriver.detect_chameleon_ble()
+            if ble_result:
+                addr, desc = ble_result
+                drv = ChameleonUltraBLEDriver(addr)
+                if drv.get_firmware():
+                    return drv, desc
+                drv.close()
+        except Exception:
+            pass
 
     # Proxmark3
     PM3Driver._kill_stale()

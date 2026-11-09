@@ -26,8 +26,8 @@ from PIL import Image
 from payloads._display_helper import ScaledDraw, scaled_font
 from payloads._input_helper import get_button
 from payloads.nfc_rfid._nfc_driver import (
-    auto_detect, ChameleonUltraDriver, is_classic, is_ultralight,
-    MIFARE_AUTH_A,
+    auto_detect, ChameleonUltraDriver, ChameleonUltraBLEDriver, is_classic,
+    is_ultralight, MIFARE_AUTH_A,
 )
 from payloads.nfc_rfid._nfc_keys import KNOWN_KEYS
 
@@ -166,7 +166,7 @@ def main():
     lcd.LCD_ShowImage(img, 0, 0)
 
     drv, desc = auto_detect()
-    if not isinstance(drv, ChameleonUltraDriver):
+    if not isinstance(drv, (ChameleonUltraDriver, ChameleonUltraBLEDriver)):
         img = Image.new("RGB", (WIDTH, HEIGHT), "black")
         d = ScaledDraw(img)
         d.text((4, 35), "Chameleon Ultra", font=font, fill="#FF4444")
