@@ -301,7 +301,8 @@ def _install_missing(deps, lcd, font_sm):
         _progress(f"pip: {pkg}")
         try:
             r = subprocess.run(
-                ["pip3", "install", "--break-system-packages", pkg],
+                ["pip3", "install", "--break-system-packages",
+                 "--ignore-installed", pkg],
                 capture_output=True, text=True, timeout=180,
             )
             if r.returncode == 0:
