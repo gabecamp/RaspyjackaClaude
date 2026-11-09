@@ -458,7 +458,8 @@
     " sdr_meteor": "",
     " gnss_skyplot": "",
     " kismet_scanner": "",
-    " auto_update_claude": ""
+    " auto_update_claude": "",
+    " dep_check": ""
   },
   "fallbacks": {
     "__scan__": "",
