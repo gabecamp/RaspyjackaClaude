@@ -174,7 +174,7 @@ def _start_preview():
     _stop_preview()
     try:
         log.info("Starting preview stream %dx%d", W, H)
-        _preview_proc = start_stream(W, H, fps=10)
+        _preview_proc = start_stream(W, H, fps=10, rotate=False)
         log.info("Preview PID %s", _preview_proc.pid if _preview_proc else "None")
     except Exception:
         log.exception("Failed to start preview")
@@ -255,7 +255,7 @@ def _snap_hires(res_idx):
     _, w, h = RESOLUTIONS[res_idx]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(PHOTO_DIR, f"hires_{ts}.jpg")
-    take_snapshot(path, w, h, timeout=10)
+    take_snapshot(path, w, h, rotate=False, timeout=10)
     if os.path.isfile(path):
         return path, os.path.getsize(path) // 1024
     return None, 0
@@ -268,7 +268,7 @@ def _start_recording(res_idx):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(VIDEO_DIR, f"video_{ts}.h264")
     _recording = True
-    _rec_proc = start_recording(path, w, h, fps=30)
+    _rec_proc = start_recording(path, w, h, fps=30, rotate=False)
     return path
 
 
@@ -665,7 +665,7 @@ def main():
                 tl_last_capture = now
                 _, w, h = RESOLUTIONS[min(res_idx, 2)]
                 path = os.path.join(tl_session_dir, f"frame_{tl_frame_count:05d}.jpg")
-                take_snapshot(path, w, h)
+                take_snapshot(path, w, h, rotate=False)
                 if os.path.isfile(path):
                     tl_frame_count += 1
 
