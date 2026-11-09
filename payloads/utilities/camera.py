@@ -26,7 +26,6 @@ import sys
 import time
 import signal
 import subprocess
-import threading
 import glob
 from datetime import datetime
 
@@ -90,10 +89,8 @@ RESOLUTIONS = [
 _running = True
 _recording = False
 _rec_proc = None
-_previewing = False
 _preview_proc = None
 _last_frame = None
-_frame_lock = threading.Lock()
 
 C_BG = (5, 5, 10)
 C_HEAD = (20, 20, 40)
@@ -152,52 +149,45 @@ def _show_msg(line1, line2="", color=C_CYAN):
     LCD.LCD_ShowImage(img, 0, 0)
 
 
-# ─── Preview (PIL→LCD, no framebuffer) ───
+# ─── Preview (single-threaded, no framebuffer) ───
+
+_FRAME_BYTES = W * H * 3
+
 
 def _start_preview():
-    global _preview_proc, _previewing
-    if _previewing:
-        return
+    global _preview_proc
+    _stop_preview()
     try:
         _preview_proc = start_stream(W, H, fps=10)
-        _previewing = True
-        threading.Thread(target=_preview_thread, daemon=True).start()
     except Exception:
-        _previewing = False
         _preview_proc = None
 
 
-def _preview_thread():
-    global _previewing, _last_frame
+def _read_frame():
+    """Read one RGB frame from the preview stream and display it.
 
-    frame_bytes = W * H * 3
+    Returns the PIL Image on success, None on failure. Non-blocking-ish:
+    ffmpeg buffers a frame ahead so the read returns quickly once the
+    pipeline is primed.
+    """
+    global _last_frame
     proc = _preview_proc
+    if not proc or proc.poll() is not None:
+        return None
     try:
-        while _previewing and _running and proc and proc.poll() is None:
-            raw = b""
-            while len(raw) < frame_bytes and _previewing:
-                chunk = proc.stdout.read(frame_bytes - len(raw))
-                if not chunk:
-                    break
-                raw += chunk
-            if len(raw) < frame_bytes:
-                break
-            img = Image.frombytes("RGB", (W, H), raw)
-            with _frame_lock:
-                _last_frame = img.copy()
-            try:
-                LCD.LCD_ShowImage(img, 0, 0)
-            except Exception:
-                break
+        raw = proc.stdout.read(_FRAME_BYTES)
+        if not raw or len(raw) < _FRAME_BYTES:
+            return None
+        img = Image.frombytes("RGB", (W, H), raw)
+        _last_frame = img
+        LCD.LCD_ShowImage(img, 0, 0)
+        return img
     except Exception:
-        pass
-    finally:
-        _previewing = False
+        return None
 
 
 def _stop_preview():
-    global _preview_proc, _previewing
-    _previewing = False
+    global _preview_proc
     proc = _preview_proc
     _preview_proc = None
     if proc:
@@ -220,16 +210,14 @@ def _stop_preview():
 # ─── Capture ───
 
 def _snap_photo():
-    """Instant capture from preview frame (no interruption)."""
+    """Instant capture from the last preview frame."""
     os.makedirs(PHOTO_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(PHOTO_DIR, f"photo_{ts}.jpg")
-    with _frame_lock:
-        frame = _last_frame
-    if frame is None:
+    if _last_frame is None:
         return None, 0
     try:
-        frame.save(path, "JPEG", quality=90)
+        _last_frame.save(path, "JPEG", quality=90)
         return path, os.path.getsize(path) // 1024
     except Exception:
         return None, 0
@@ -549,7 +537,7 @@ def main():
                 continue
             _draw_menu(menu_sel)
 
-        # ── Photo (preview running) ──
+        # ── Photo (live preview in main loop) ──
         elif state == "photo":
             if btn == "KEY3":
                 _stop_preview()
@@ -566,6 +554,7 @@ def main():
                     _show_msg("Capture failed!", "No frame available", C_RED)
                     time.sleep(1.5)
                 _start_preview()
+                continue
             if btn == "KEY2" and now - last_btn > 0.5:
                 last_btn = now
                 _stop_preview()
@@ -578,6 +567,8 @@ def main():
                     _show_msg("Capture failed!", "", C_RED)
                     time.sleep(1.5)
                 _start_preview()
+                continue
+            _read_frame()
 
         # ── Video ──
         elif state == "video":
@@ -598,6 +589,8 @@ def main():
                     _start_preview()
             if _recording:
                 _draw_rec_screen(now - rec_start, res_idx)
+            else:
+                _read_frame()
 
         # ── Timelapse ──
         elif state == "timelapse":
