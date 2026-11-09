@@ -195,10 +195,13 @@ def _read_frame():
         log.warning("Preview proc exited rc=%s after %d frames", rc, _frame_count)
         return None
     try:
-        raw = proc.stdout.read(_FRAME_BYTES)
-        if not raw or len(raw) < _FRAME_BYTES:
-            log.warning("Short read: got %d need %d", len(raw) if raw else 0, _FRAME_BYTES)
-            return None
+        raw = b""
+        while len(raw) < _FRAME_BYTES:
+            chunk = proc.stdout.read(_FRAME_BYTES - len(raw))
+            if not chunk:
+                log.warning("EOF during read: got %d need %d", len(raw), _FRAME_BYTES)
+                return None
+            raw += chunk
         img = Image.frombytes("RGB", (W, H), raw)
         _last_frame = img
         LCD.LCD_ShowImage(img, 0, 0)
