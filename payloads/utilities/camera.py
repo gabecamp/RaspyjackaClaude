@@ -162,8 +162,12 @@ def _start_preview():
     if _previewing:
         return
     _previewing = True
-    _preview_proc = start_stream(W, H, fps=15)
-    threading.Thread(target=_preview_thread, daemon=True).start()
+    try:
+        _preview_proc = start_stream(W, H, fps=15)
+        threading.Thread(target=_preview_thread, daemon=True).start()
+    except Exception:
+        _previewing = False
+        _preview_proc = None
 
 
 def _preview_thread():
@@ -235,6 +239,10 @@ def _stop_preview():
             pass
     _preview_proc = None
     time.sleep(0.3)
+    try:
+        LCD.LCD_Init(LCD_1in44.SCAN_DIR_DFT)
+    except Exception:
+        pass
 
 
 # ─── Capture ───
@@ -256,14 +264,12 @@ def _snap_photo():
 
 
 def _snap_hires(res_idx):
-    """Hi-res capture (USB UVC or rpicam-still); pauses preview."""
+    """Hi-res capture (USB UVC or rpicam-still); caller must stop preview first."""
     os.makedirs(PHOTO_DIR, exist_ok=True)
     _, w, h = RESOLUTIONS[res_idx]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(PHOTO_DIR, f"hires_{ts}.jpg")
-    _stop_preview()
-    take_snapshot(path, w, h)
-    _start_preview()
+    take_snapshot(path, w, h, timeout=10)
     if os.path.isfile(path):
         return path, os.path.getsize(path) // 1024
     return None, 0
@@ -542,6 +548,7 @@ def main():
     tl_session_dir = ""
 
     while _running:
+      try:
         btn = _get_btn()
         now = time.time()
 
@@ -583,23 +590,26 @@ def main():
             if btn == "OK" and now - last_btn > 0.5:
                 last_btn = now
                 path, size = _snap_photo()
+                _stop_preview()
                 if path:
-                    _show_msg(f"Photo saved! {size}KB", os.path.basename(path), C_GREEN)
-                    time.sleep(2)
-                    _start_preview()
+                    _show_msg(f"Saved! {size}KB", os.path.basename(path), C_GREEN)
+                    time.sleep(1.5)
                 else:
                     _show_msg("Capture failed!", "No frame available", C_RED)
-                    time.sleep(2)
+                    time.sleep(1.5)
+                _start_preview()
             if btn == "KEY2" and now - last_btn > 0.5:
                 last_btn = now
+                _stop_preview()
                 _show_msg("Hi-res capture...", RESOLUTIONS[res_idx][0], C_YELLOW)
                 path, size = _snap_hires(res_idx)
                 if path:
                     _show_msg(f"HiRes saved! {size}KB", os.path.basename(path), C_GREEN)
-                    time.sleep(2)
+                    time.sleep(1.5)
                 else:
                     _show_msg("Capture failed!", "", C_RED)
-                    time.sleep(2)
+                    time.sleep(1.5)
+                _start_preview()
 
         # ── Video ──
         elif state == "video":
@@ -798,6 +808,11 @@ def main():
             _draw_settings(res_idx, settings_sel)
 
         time.sleep(0.08)
+      except Exception as exc:
+        _stop_preview()
+        _show_msg("Error!", str(exc)[:16], C_RED)
+        time.sleep(2)
+        state = "menu"
 
     _stop_preview()
     if _recording:
