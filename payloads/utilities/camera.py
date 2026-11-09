@@ -27,7 +27,16 @@ import time
 import signal
 import subprocess
 import glob
+import traceback
+import logging
 from datetime import datetime
+
+logging.basicConfig(
+    filename="/tmp/camera_debug.log",
+    level=logging.DEBUG,
+    format="%(asctime)s %(message)s",
+)
+log = logging.getLogger("camera")
 
 sys.path.append(os.path.abspath(os.path.join(__file__, "..", "..", "..")))
 
@@ -120,14 +129,20 @@ def _get_btn():
 
 
 def _check_camera():
-    if find_uvc_device():
+    dev = find_uvc_device()
+    if dev:
+        log.info("Found UVC device: %s", dev)
         return True
+    log.info("No UVC device, checking CSI")
     try:
         r = subprocess.run(
             ["rpicam-hello", "--list-cameras"],
             capture_output=True, text=True, timeout=5)
-        return "imx219" in r.stdout.lower()
+        found = "imx219" in r.stdout.lower()
+        log.info("CSI camera: %s", found)
+        return found
     except Exception:
+        log.exception("CSI check failed")
         return False
 
 
@@ -158,31 +173,39 @@ def _start_preview():
     global _preview_proc
     _stop_preview()
     try:
+        log.info("Starting preview stream %dx%d", W, H)
         _preview_proc = start_stream(W, H, fps=10)
+        log.info("Preview PID %s", _preview_proc.pid if _preview_proc else "None")
     except Exception:
+        log.exception("Failed to start preview")
         _preview_proc = None
 
 
-def _read_frame():
-    """Read one RGB frame from the preview stream and display it.
+_frame_count = 0
 
-    Returns the PIL Image on success, None on failure. Non-blocking-ish:
-    ffmpeg buffers a frame ahead so the read returns quickly once the
-    pipeline is primed.
-    """
-    global _last_frame
+
+def _read_frame():
+    """Read one RGB frame from the preview stream and display it."""
+    global _last_frame, _frame_count
     proc = _preview_proc
-    if not proc or proc.poll() is not None:
+    if not proc:
+        return None
+    rc = proc.poll()
+    if rc is not None:
+        log.warning("Preview proc exited rc=%s after %d frames", rc, _frame_count)
         return None
     try:
         raw = proc.stdout.read(_FRAME_BYTES)
         if not raw or len(raw) < _FRAME_BYTES:
+            log.warning("Short read: got %d need %d", len(raw) if raw else 0, _FRAME_BYTES)
             return None
         img = Image.frombytes("RGB", (W, H), raw)
         _last_frame = img
         LCD.LCD_ShowImage(img, 0, 0)
+        _frame_count += 1
         return img
     except Exception:
+        log.exception("_read_frame error at frame %d", _frame_count)
         return None
 
 
@@ -770,11 +793,13 @@ def main():
 
         time.sleep(0.08)
       except Exception as exc:
+        log.exception("Main loop error in state=%s", state)
         _stop_preview()
         _show_msg("Error!", str(exc)[:16], C_RED)
         time.sleep(2)
         state = "menu"
 
+    log.info("Exiting main loop, _running=%s", _running)
     _stop_preview()
     if _recording:
         _stop_recording()
