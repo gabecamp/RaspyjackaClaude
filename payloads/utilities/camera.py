@@ -27,7 +27,6 @@ import time
 import signal
 import subprocess
 import threading
-import mmap
 import glob
 from datetime import datetime
 
@@ -79,8 +78,6 @@ else:
 LOOT_DIR = "/root/Raspyjack/loot/Camera"
 PHOTO_DIR = os.path.join(LOOT_DIR, "Photos")
 VIDEO_DIR = os.path.join(LOOT_DIR, "Videos")
-FB_DEVICE = "/dev/fb1" if os.path.exists("/dev/fb1") else "/dev/fb0"
-FB_SIZE = W * H * 2
 DEBOUNCE = 0.20
 
 RESOLUTIONS = [
@@ -155,15 +152,15 @@ def _show_msg(line1, line2="", color=C_CYAN):
     LCD.LCD_ShowImage(img, 0, 0)
 
 
-# ─── Preview ───
+# ─── Preview (PIL→LCD, no framebuffer) ───
 
 def _start_preview():
     global _preview_proc, _previewing
     if _previewing:
         return
-    _previewing = True
     try:
-        _preview_proc = start_stream(W, H, fps=15)
+        _preview_proc = start_stream(W, H, fps=10)
+        _previewing = True
         threading.Thread(target=_preview_thread, daemon=True).start()
     except Exception:
         _previewing = False
@@ -172,77 +169,52 @@ def _start_preview():
 
 def _preview_thread():
     global _previewing, _last_frame
-    import numpy as np
 
-    frame_size = W * H * 3 // 2
-    fb_fd = None
-    fb_map = None
+    frame_bytes = W * H * 3
+    proc = _preview_proc
     try:
-        fb_fd = os.open(FB_DEVICE, os.O_RDWR)
-        fb_map = mmap.mmap(fb_fd, FB_SIZE, mmap.MAP_SHARED,
-                           mmap.PROT_WRITE | mmap.PROT_READ)
-    except Exception:
-        _previewing = False
-        return
-
-    try:
-        while _previewing and _running and _preview_proc and _preview_proc.poll() is None:
+        while _previewing and _running and proc and proc.poll() is None:
             raw = b""
-            while len(raw) < frame_size and _previewing:
-                chunk = _preview_proc.stdout.read(frame_size - len(raw))
+            while len(raw) < frame_bytes and _previewing:
+                chunk = proc.stdout.read(frame_bytes - len(raw))
                 if not chunk:
                     break
                 raw += chunk
-            if len(raw) < frame_size:
+            if len(raw) < frame_bytes:
                 break
-
-            yuv = np.frombuffer(raw, dtype=np.uint8)
-            y = yuv[:W * H].reshape(H, W).astype(np.int16)
-            u_raw = yuv[W * H:W * H + W * H // 4].reshape(H // 2, W // 2)
-            v_raw = yuv[W * H + W * H // 4:].reshape(H // 2, W // 2)
-            u = np.repeat(np.repeat(u_raw, 2, axis=0), 2, axis=1).astype(np.int16) - 128
-            v = np.repeat(np.repeat(v_raw, 2, axis=0), 2, axis=1).astype(np.int16) - 128
-
-            r = np.clip(y + ((359 * v) >> 8), 0, 255).astype(np.uint8)
-            g = np.clip(y - ((88 * u + 183 * v) >> 8), 0, 255).astype(np.uint8)
-            b = np.clip(y + ((454 * u) >> 8), 0, 255).astype(np.uint8)
-
-            rgb565 = ((r.astype(np.uint16) >> 3) << 11) | \
-                     ((g.astype(np.uint16) >> 2) << 5) | \
-                     (b.astype(np.uint16) >> 3)
-            fb_map.seek(0)
-            fb_map.write(rgb565.tobytes())
-
+            img = Image.frombytes("RGB", (W, H), raw)
             with _frame_lock:
-                _last_frame = np.stack([r, g, b], axis=-1)
+                _last_frame = img.copy()
+            try:
+                LCD.LCD_ShowImage(img, 0, 0)
+            except Exception:
+                break
     except Exception:
         pass
     finally:
-        try:
-            if fb_map:
-                fb_map.close()
-            if fb_fd is not None:
-                os.close(fb_fd)
-        except Exception:
-            pass
         _previewing = False
 
 
 def _stop_preview():
     global _preview_proc, _previewing
     _previewing = False
-    if _preview_proc and _preview_proc.poll() is None:
-        _preview_proc.kill()
-        try:
-            _preview_proc.wait(timeout=2)
-        except Exception:
-            pass
+    proc = _preview_proc
     _preview_proc = None
-    time.sleep(0.3)
-    try:
-        LCD.LCD_Init(LCD_1in44.SCAN_DIR_DFT)
-    except Exception:
-        pass
+    if proc:
+        child = getattr(proc, "_child", None)
+        if proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+        if child and child.poll() is None:
+            child.kill()
+            try:
+                child.wait(timeout=2)
+            except Exception:
+                pass
+    time.sleep(0.2)
 
 
 # ─── Capture ───
@@ -257,7 +229,7 @@ def _snap_photo():
     if frame is None:
         return None, 0
     try:
-        Image.fromarray(frame, "RGB").save(path, "JPEG", quality=90)
+        frame.save(path, "JPEG", quality=90)
         return path, os.path.getsize(path) // 1024
     except Exception:
         return None, 0
@@ -318,30 +290,26 @@ def _show_photo(path):
 
 
 def _play_video(path):
-    """Play h264 video via ffmpeg to framebuffer."""
+    """Play h264 video via ffmpeg, rendered through PIL→LCD."""
+    frame_bytes = W * H * 3
     try:
-        fb = FB_DEVICE
         proc = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "quiet",
              "-i", path,
              "-vf", f"scale={W}:{H}",
-             "-pix_fmt", "rgb565le", "-f", "rawvideo", "pipe:1"],
+             "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        fb_fd = os.open(fb, os.O_RDWR)
-        fb_map = mmap.mmap(fb_fd, FB_SIZE, mmap.MAP_SHARED,
-                           mmap.PROT_WRITE | mmap.PROT_READ)
         while _running:
-            raw = proc.stdout.read(FB_SIZE)
-            if not raw or len(raw) < FB_SIZE:
+            raw = proc.stdout.read(frame_bytes)
+            if not raw or len(raw) < frame_bytes:
                 break
-            fb_map.seek(0)
-            fb_map.write(raw)
+            img = Image.frombytes("RGB", (W, H), raw)
+            LCD.LCD_ShowImage(img, 0, 0)
             btn = _get_btn()
             if btn == "KEY3" or btn == "OK":
                 break
         proc.kill()
-        fb_map.close()
-        os.close(fb_fd)
+        proc.wait(timeout=2)
     except Exception:
         pass
 

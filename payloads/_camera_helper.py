@@ -65,20 +65,38 @@ def _rpicam_rot(rotate):
     return ["--rotation", "180"] if rotate else []
 
 
-def start_stream(w, h, fps=15, rotate=True):
-    """Start a live raw yuv420p frame stream on stdout (Popen)."""
+def start_stream(w, h, fps=15, rotate=True, pix_fmt="rgb24"):
+    """Start a live raw frame stream on stdout (Popen).
+
+    pix_fmt: 'rgb24' for PIL-friendly RGB output, 'yuv420p' for legacy.
+    """
     dev = find_uvc_device()
     if dev:
         cmd = _FFMPEG_BASE + ["-f", "v4l2", "-i", dev,
                               "-vf", _uvc_vf(w, h, fps, rotate),
-                              "-pix_fmt", "yuv420p", "-f", "rawvideo", "-"]
-    else:
-        cmd = (["rpicam-vid", "--width", str(w), "--height", str(h),
-                "--framerate", str(fps), "--codec", "yuv420"]
-               + _rpicam_rot(rotate)
-               + ["-t", "0", "--nopreview", "-o", "-"])
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                              "-pix_fmt", pix_fmt, "-f", "rawvideo", "-"]
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, bufsize=0)
+
+    # CSI camera: rpicam-vid → ffmpeg for pixel format conversion
+    rpicam_cmd = (["rpicam-vid", "--width", str(w), "--height", str(h),
+                   "--framerate", str(fps), "--codec", "yuv420"]
+                  + _rpicam_rot(rotate)
+                  + ["-t", "0", "--nopreview", "-o", "-"])
+    if pix_fmt == "yuv420p":
+        return subprocess.Popen(rpicam_cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, bufsize=0)
+    rpicam = subprocess.Popen(rpicam_cmd, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, bufsize=0)
+    ff_cmd = _FFMPEG_BASE + ["-f", "rawvideo", "-pix_fmt", "yuv420p",
+                             "-video_size", f"{w}x{h}",
+                             "-framerate", str(fps), "-i", "pipe:0",
+                             "-pix_fmt", pix_fmt, "-f", "rawvideo", "-"]
+    proc = subprocess.Popen(ff_cmd, stdin=rpicam.stdout,
+                            stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, bufsize=0)
+    proc._child = rpicam
+    return proc
 
 
 def take_snapshot(path, w, h, rotate=True, timeout=10):
