@@ -221,6 +221,17 @@ _battery_pct = -1
 _battery_charging = False
 _show_clock = True
 
+def _read_pisugar_pct():
+    """Ask the local PiSugar server for the battery level. Returns 0-100 or -1."""
+    try:
+        with socket.create_connection(("127.0.0.1", 8423), timeout=2) as s:
+            s.sendall(b"get battery\n")
+            reply = s.recv(256).decode(errors="ignore")
+        # reply looks like "battery: 80.35491"
+        return max(0, min(100, int(float(reply.split(":", 1)[1]))))
+    except Exception:
+        return -1
+
 def _check_battery():
     global _battery_pct, _battery_charging
     try:
@@ -242,7 +253,7 @@ def _check_battery():
                     base = found[0]
                     break
         if base is None:
-            _battery_pct = -1
+            _battery_pct = _read_pisugar_pct()
             return
         cap_path = base + "capacity"
         if os.path.exists(cap_path):
